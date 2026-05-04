@@ -1,0 +1,20 @@
+# PlatformIO build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+.idea/
+
+# MATLAB
+*.asv
+*.mat
+*.autosave
+slprj/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Editor
+*~
