@@ -12,7 +12,7 @@ clearvars; close all; clc;
 PORT_STM32    = "COM5";    % <-- check Device Manager for the ST-LINK Virtual COM Port
 BAUD          = 115200;    % must match STM32 serial_vcp.cpp
 fs            = 1000;      % STM32 uses 1 ms sample period
-N             = 1024;      % must match STM32 kSampleCount
+N             = 256;       % must match STM32 kSampleCount
 threshold     = 50;        % anomaly threshold
 axis_sel      = 'Z';       % 'X', 'Y', or 'Z'
 calib_blocks  = 5;         % number of healthy blocks for baseline

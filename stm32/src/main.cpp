@@ -10,7 +10,7 @@
 
 namespace
 {
-constexpr uint16_t kSampleCount = 1024;
+constexpr uint16_t kSampleCount = 256;   // smaller block -> faster, more responsive updates
 constexpr uint32_t kSamplePeriodMs = 1;
 
 AccelerometerSample g_sample_buffer[kSampleCount] = {};
