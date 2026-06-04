@@ -1,20 +1,17 @@
-# PlatformIO build artifacts
+# PlatformIO build output
 .pio/
+.pio-core/
 .pioenvs/
 .piolibdeps/
+
+# IDE
 .vscode/
 .idea/
 
-# MATLAB
-*.asv
-*.mat
-*.autosave
-slprj/
+# Serial monitor logs
+logs/
+*.log
 
 # OS
 .DS_Store
 Thumbs.db
-*.swp
-
-# Editor
-*~
