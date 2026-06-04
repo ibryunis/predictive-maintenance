@@ -41,9 +41,9 @@ sStm.Timeout = serialTimeout;
 configureTerminator(sStm, "LF");
 flush(sStm);
 
-% Send "STATE,distance,block" to the STM32, which forwards it to the TTGO.
-% STATE is one of: CALIB, OK, ALARM (also IDLE at boot, set by the firmware).
-sendStatus = @(state, dist, block) writeline(sStm, sprintf('%s,%.2f,%d', state, dist, block));
+% Send one state byte to the STM32, which forwards it to the TTGO over I2C.
+ST_IDLE = 0;  ST_CALIB = 1;  ST_OK = 2;  ST_ALARM = 3;
+sendState = @(s) write(sStm, uint8(s), "uint8");
 
 %% Figure: status dashboard + live spectrum + distance history
 % Colours (state -> RGB)
@@ -126,7 +126,7 @@ for k = 1:calib_blocks
     fprintf('  calibration block %d/%d\n', k, calib_blocks);
 
     % Release the next STM32 buffer and show calibration progress on the TTGO.
-    sendStatus('CALIB', 0, k);
+    sendState(ST_CALIB);
 end
 
 baseline = baseline / calib_blocks;
@@ -166,12 +166,12 @@ while ishandle(fig)
         setBanner('ALARM', COL_ALARM, ...
             sprintf('ALARM    distance %.1f  >  %.0f    |    block %d', d, threshold, block));
         set(hHead, 'MarkerFaceColor', COL_ALARM);
-        sendStatus('ALARM', d, block);
+        sendState(ST_ALARM);
     else
         setBanner('OK', COL_OK, ...
             sprintf('OK    distance %.1f  /  %.0f    |    block %d', d, threshold, block));
         set(hHead, 'MarkerFaceColor', COL_OK);
-        sendStatus('OK', d, block);
+        sendState(ST_OK);
     end
 
     drawnow limitrate;     % faster, smoother updates than plain drawnow
