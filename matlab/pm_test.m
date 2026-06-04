@@ -17,6 +17,7 @@ threshold     = 50;        % anomaly threshold
 axis_sel      = 'Z';       % 'X', 'Y', or 'Z'
 calib_blocks  = 5;         % number of healthy blocks for baseline
 serialTimeout = 15;        % seconds
+spec_ymax     = 200;       % FFT spectrum zoom: Y-axis max (lower = more zoomed in)
 
 %% Derived values
 df   = fs / N;
@@ -79,7 +80,7 @@ xlabel(axSpec, 'Frequency [Hz]'); ylabel(axSpec, 'Amplitude');
 title(axSpec, 'Live FFT Spectrum', 'Color', COL_TXT);
 legend(axSpec, {'Live', 'Healthy baseline'}, 'TextColor', COL_TXT, ...
        'Color', COL_PANEL, 'EdgeColor', [0.4 0.4 0.45], 'Location', 'northeast');
-grid(axSpec, 'on'); xlim(axSpec, [0, fs/2]);
+grid(axSpec, 'on'); xlim(axSpec, [0, fs/2]); ylim(axSpec, [0, spec_ymax]);
 
 % --- Distance history (bottom) ---
 axDist = axes(fig, 'Position', [0.08 0.08 0.86 0.33], ...
