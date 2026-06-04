@@ -11,7 +11,16 @@
 #define TFT_DC   16
 #define TFT_RST  23
 #define TFT_BL   4
+#define TFT_BACKLIGHT_ON HIGH   // drive the backlight pin high to light the panel
 
+// Fonts used by the UI (font 2 and font 4 are required by drawScreen)
 #define LOAD_GLCD
+#define LOAD_FONT2
+#define LOAD_FONT4
+#define LOAD_FONT6
+#define LOAD_FONT7
+#define LOAD_FONT8
+#define LOAD_GFXFF
+#define SMOOTH_FONT
 
 #define SPI_FREQUENCY  40000000

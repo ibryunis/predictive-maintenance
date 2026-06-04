@@ -106,6 +106,10 @@ void drawScreen(const String &state, float dist, int block)
 
 void setup()
 {
+    // Turn the backlight on, otherwise the panel stays black.
+    pinMode(TFT_BL, OUTPUT);
+    digitalWrite(TFT_BL, HIGH);
+
     tft.init();
     tft.setRotation(1);    // landscape
     tft.fillScreen(BG_COLOR);
