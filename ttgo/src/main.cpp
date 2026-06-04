@@ -28,15 +28,13 @@ TFT_eSPI tft = TFT_eSPI();
 #define IDLE_COLOR  0x8410   // gray
 #define TEXT_COLOR  TFT_WHITE
 
-// I2C line assembly (filled in the receive callback)
+// I2C message buffer.
 // On ESP32, Wire.onReceive runs in a separate driver task, NOT a maskable ISR,
 // so noInterrupts() would not protect lineBuf. Use a portMUX critical section,
 // which serializes across both cores and the I2C task.
 portMUX_TYPE rxMux = portMUX_INITIALIZER_UNLOCKED;
-volatile char    rxBuf[64];
-volatile uint8_t rxLen     = 0;
-volatile bool    lineReady = false;
-char             lineBuf[64];   // completed line, guarded by rxMux
+volatile bool lineReady = false;
+char          lineBuf[64];   // last complete message, guarded by rxMux
 
 // State tracking (avoid pointless redraws)
 String lastState = "";
@@ -45,29 +43,35 @@ int    lastBlock = 0;
 
 void receiveEvent(int byteCount)
 {
+    // The STM32 sends one complete "STATE,distance,block" message per I2C
+    // transaction, so treat each callback as one full message. Line endings
+    // are ignored, so it works with or without a trailing newline.
+    char tmp[64];
+    uint8_t i = 0;
+
     while (Wire.available())
     {
         char c = (char)Wire.read();
-
         if (c == '\n' || c == '\r')
         {
-            if (rxLen > 0)
-            {
-                rxBuf[rxLen] = '\0';
-                taskENTER_CRITICAL(&rxMux);
-                for (uint8_t i = 0; i <= rxLen; i++)
-                {
-                    lineBuf[i] = rxBuf[i];
-                }
-                lineReady = true;
-                taskEXIT_CRITICAL(&rxMux);
-                rxLen = 0;
-            }
+            continue;
         }
-        else if (rxLen < sizeof(rxBuf) - 1)
+        if (i < sizeof(tmp) - 1)
         {
-            rxBuf[rxLen++] = c;
+            tmp[i++] = c;
         }
+    }
+    tmp[i] = '\0';
+
+    if (i > 0)
+    {
+        taskENTER_CRITICAL(&rxMux);
+        for (uint8_t k = 0; k <= i; k++)
+        {
+            lineBuf[k] = tmp[k];
+        }
+        lineReady = true;
+        taskEXIT_CRITICAL(&rxMux);
     }
 }
 

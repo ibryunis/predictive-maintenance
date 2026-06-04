@@ -24,7 +24,7 @@ Setup (Windows laptop)
 1. Find the COM port:
    Device Manager -> Ports (COM & LPT) ->
    "STMicroelectronics STLink Virtual COM Port (COMx)".
-   If it is NOT COM5, edit it in TWO places:
+   If it is NOT COM8, edit it in TWO places:
      - matlab/pm_test.m       line: PORT_STM32 = "COMx";
      - stm32/platformio.ini   line: monitor_port = COMx
 

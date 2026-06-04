@@ -9,7 +9,7 @@
 clearvars; close all; clc;
 
 %% Configuration
-PORT_STM32    = "COM5";    % <-- check Device Manager for the ST-LINK Virtual COM Port
+PORT_STM32    = "COM8";    % <-- check Device Manager for the ST-LINK Virtual COM Port
 BAUD          = 115200;    % must match STM32 serial_vcp.cpp
 fs            = 1000;      % STM32 uses 1 ms sample period
 N             = 128;       % must match STM32 kSampleCount
@@ -137,7 +137,9 @@ fprintf('Calibration done.\n');
 %% Monitoring
 fprintf('Monitoring... shake the board to trigger the alarm.\n');
 
+WINDOW = 100;          % show only the most recent N blocks (keeps the plot fast)
 dist  = [];
+blocks = [];
 block = 0;
 
 while ishandle(fig)
@@ -146,11 +148,19 @@ while ishandle(fig)
     d = norm(P - baseline);
 
     block = block + 1;
-    dist(end+1) = d; %#ok<AGROW>
+    dist(end+1)   = d;     %#ok<AGROW>
+    blocks(end+1) = block; %#ok<AGROW>
+
+    % Keep only the last WINDOW points so rendering stays snappy over time
+    if numel(dist) > WINDOW
+        dist   = dist(end-WINDOW+1:end);
+        blocks = blocks(end-WINDOW+1:end);
+    end
 
     set(hSpec, 'YData', P);
-    set(hDist, 'XData', 1:numel(dist), 'YData', dist);
+    set(hDist, 'XData', blocks, 'YData', dist);
     set(hHead, 'XData', block, 'YData', d);   % highlight the current value
+    xlim(axDist, [blocks(1), max(blocks(end), blocks(1)+1)]);
 
     if d > threshold
         setBanner('ALARM', COL_ALARM, ...
@@ -164,7 +174,7 @@ while ishandle(fig)
         sendStatus('OK', d, block);
     end
 
-    drawnow;
+    drawnow limitrate;     % faster, smoother updates than plain drawnow
     fprintf('d = %.2f   (threshold = %.2f)\n', d, threshold);
 end
 
