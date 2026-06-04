@@ -12,7 +12,7 @@ clearvars; close all; clc;
 PORT_STM32    = "COM5";    % <-- check Device Manager for the ST-LINK Virtual COM Port
 BAUD          = 115200;    % must match STM32 serial_vcp.cpp
 fs            = 1000;      % STM32 uses 1 ms sample period
-N             = 256;       % must match STM32 kSampleCount
+N             = 128;       % must match STM32 kSampleCount
 threshold     = 50;        % anomaly threshold
 axis_sel      = 'Z';       % 'X', 'Y', or 'Z'
 calib_blocks  = 5;         % number of healthy blocks for baseline
@@ -210,18 +210,10 @@ function x = readStmBuffer(s, N, col)
             error('STM32 buffer ended early: received %d of %d samples.', n, N);
         end
 
-        % Skip CSV header and any status/error lines.
-        if startsWith(line, "time_ms") || startsWith(line, "MATLAB value:") || startsWith(line, "ERROR")
-            continue;
-        end
-
-        parts = split(line, ",");
-        if numel(parts) ~= 4
-            continue;
-        end
-
-        v = str2double(parts);
-        if any(isnan(v))
+        % Each in-buffer line is a single Z-axis value. Any non-numeric line
+        % (header / status / error text) parses to NaN and is skipped.
+        v = str2double(line);
+        if isnan(v)
             continue;
         end
 
@@ -230,6 +222,6 @@ function x = readStmBuffer(s, N, col)
             error('Received more than %d samples before END_BUFFER. Check N in MATLAB and STM32.', N);
         end
 
-        x(n) = v(col);
+        x(n) = v;
     end
 end

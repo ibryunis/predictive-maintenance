@@ -16,16 +16,12 @@ void DataLogger::PrintHeader()
 
 void DataLogger::LogSample(uint32_t time_ms, const AccelerometerSample& sample)
 {
-    char line[96];
+    // Only the Z axis is sent (one number per line) to keep the transmit small
+    // and the updates fast. MATLAB analyses the Z axis.
+    (void)time_ms;
 
-    std::snprintf(line,
-                  sizeof(line),
-                  "%lu,%d,%d,%d\r\n",
-                  (unsigned long)time_ms,
-                  (int)sample.x_mg,
-                  (int)sample.y_mg,
-                  (int)sample.z_mg);
-
+    char line[16];
+    std::snprintf(line, sizeof(line), "%d\r\n", (int)sample.z_mg);
     serial_.Write(line);
 }
 

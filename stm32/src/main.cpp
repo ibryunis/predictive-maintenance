@@ -10,7 +10,7 @@
 
 namespace
 {
-constexpr uint16_t kSampleCount = 256;   // smaller block -> faster, more responsive updates
+constexpr uint16_t kSampleCount = 128;   // smaller block -> faster, more responsive updates
 constexpr uint32_t kSamplePeriodMs = 1;
 
 AccelerometerSample g_sample_buffer[kSampleCount] = {};
@@ -69,7 +69,6 @@ int main(void)
         }
 
         pc_serial.Write("BEGIN_BUFFER\r\n");
-        logger.PrintHeader();
         logger.LogBuffer(0U, g_sample_buffer, kSampleCount, kSamplePeriodMs);
         pc_serial.Write("END_BUFFER\r\n");
 
