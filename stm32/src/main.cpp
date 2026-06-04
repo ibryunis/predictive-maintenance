@@ -22,7 +22,7 @@ static void ErrorLoop(SerialVCP& serial, const char* message);
 static bool FillSampleBuffer(Accelerometer& accelerometer,
                              AccelerometerSample* samples,
                              uint16_t count);
-static uint8_t WaitForMatlabByte(SerialVCP& serial);
+static void WaitForMatlabLine(SerialVCP& serial, char* buffer, uint16_t max_len);
 
 int main(void)
 {
@@ -54,10 +54,12 @@ int main(void)
 
     DataLogger logger(pc_serial);
 
-    // Boot ping: show the IDLE screen on the TTGO right away so we can confirm
-    // the I2C link works before any data flows. If the screen stays on its
-    // startup message, the wiring/power to the TTGO is the problem.
-    TTGO_SendState(0U);
+    // Boot ping: show an "idle" screen on the TTGO right away so we can
+    // confirm the I2C link works before any data flows. If the screen stays
+    // on its startup message, the wiring/power to the TTGO is the problem.
+    TTGO_SendLine("IDLE,0,0");
+
+    char matlab_line[64] = {};
 
     while (1)
     {
@@ -70,11 +72,11 @@ int main(void)
         logger.LogBuffer(0U, g_sample_buffer, kSampleCount, kSamplePeriodMs);
         pc_serial.Write("END_BUFFER\r\n");
 
-        // MATLAB replies with one state byte (0/1/2/3). Receiving it both
-        // releases the next buffer and tells us what to show on the TTGO.
-        const uint8_t state = WaitForMatlabByte(pc_serial);
+        // MATLAB replies with one line: "STATE,distance,block" (e.g. "OK,12.5,16").
+        // Receiving it both releases the next buffer and tells us what to show.
+        WaitForMatlabLine(pc_serial, matlab_line, sizeof(matlab_line));
 
-        if (!TTGO_SendState(state))
+        if (!TTGO_SendLine(matlab_line))
         {
             ReportI2CError(pc_serial, TTGO_GetLastError());
         }
@@ -104,8 +106,10 @@ static bool FillSampleBuffer(Accelerometer& accelerometer,
     return true;
 }
 
-static uint8_t WaitForMatlabByte(SerialVCP& serial)
+static void WaitForMatlabLine(SerialVCP& serial, char* buffer, uint16_t max_len)
 {
+    uint16_t n = 0;
+
     while (1)
     {
         uint8_t received = 0;
@@ -114,13 +118,21 @@ static uint8_t WaitForMatlabByte(SerialVCP& serial)
             continue;
         }
 
-        // Ignore stray line-ending/whitespace bytes; the state codes are 0..3.
-        if (received == '\r' || received == '\n' || received == ' ' || received == '\t')
+        if (received == '\n')
+        {
+            buffer[n] = '\0';
+            return;
+        }
+
+        if (received == '\r')
         {
             continue;
         }
 
-        return received;
+        if (n < (max_len - 1U))
+        {
+            buffer[n++] = (char)received;
+        }
     }
 }
 

@@ -1,5 +1,7 @@
 #include "i2c_ttgo.h"
 
+#include <cstring>
+
 #include "stm32l4xx_hal.h"
 
 namespace
@@ -46,11 +48,26 @@ bool TTGO_I2C_Init(void)
     return true;
 }
 
-bool TTGO_SendState(uint8_t state)
+bool TTGO_SendLine(const char* text)
 {
-    // Single-byte transfer: most reliable for the ESP32 I2C slave.
+    if (text == nullptr)
+    {
+        return false;
+    }
+
+    // Send the text plus a trailing newline so the TTGO knows the line ended.
+    char frame[64];
+    size_t len = std::strlen(text);
+    if (len > sizeof(frame) - 2U)
+    {
+        len = sizeof(frame) - 2U;
+    }
+    std::memcpy(frame, text, len);
+    frame[len] = '\n';
+    const uint16_t frame_len = (uint16_t)(len + 1U);
+
     const HAL_StatusTypeDef result =
-        HAL_I2C_Master_Transmit(&g_ttgo_i2c, kTtgoAddress, &state, 1, 100);
+        HAL_I2C_Master_Transmit(&g_ttgo_i2c, kTtgoAddress, (uint8_t*)frame, frame_len, 100);
 
     if (result == HAL_OK)
     {

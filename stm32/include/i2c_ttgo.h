@@ -4,5 +4,5 @@
 #include <stdint.h>
 
 bool TTGO_I2C_Init(void);
-bool TTGO_SendState(uint8_t state);       // 0=IDLE 1=CALIB 2=OK 3=ALARM
+bool TTGO_SendLine(const char* text);     // forwards "STATE,distance,block" to the TTGO
 uint32_t TTGO_GetLastError(void);

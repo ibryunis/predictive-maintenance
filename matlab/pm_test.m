@@ -41,9 +41,9 @@ sStm.Timeout = serialTimeout;
 configureTerminator(sStm, "LF");
 flush(sStm);
 
-% Send one state byte to the STM32, which forwards it to the TTGO over I2C.
-ST_IDLE = 0;  ST_CALIB = 1;  ST_OK = 2;  ST_ALARM = 3;
-sendState = @(s) write(sStm, uint8(s), "uint8");
+% Send "STATE,distance,block" to the STM32, which forwards it to the TTGO.
+% STATE is one of: CALIB, OK, ALARM (also IDLE at boot, set by the firmware).
+sendStatus = @(state, dist, block) writeline(sStm, sprintf('%s,%.2f,%d', state, dist, block));
 
 %% Figure: status dashboard + live spectrum + distance history
 % Colours (state -> RGB)
@@ -99,9 +99,10 @@ title(axDist, 'Anomaly Detection', 'Color', COL_TXT);
 grid(axDist, 'on');
 
 %% Calibration
-setBanner('CALIB', COL_CALIB, 'PRESS ENTER TO CALIBRATE  (then keep the board still)');
-fprintf('Press ENTER, then keep the board still for calibration...\n');
-pause;
+setBanner('CALIB', COL_CALIB, 'CLICK COMMAND WINDOW + PRESS ENTER TO CALIBRATE');
+% input() reliably waits for ENTER in the Command Window. (pause is flaky
+% because keypresses go to whichever window has focus, often the figure.)
+input('Keep the board still, then click the Command Window and press ENTER to calibrate...', 's');
 
 % Protocol: the STM32 sends a buffer, then waits for exactly ONE reply line
 % before sending the next. So we read one buffer, then send one status line --
@@ -126,7 +127,7 @@ for k = 1:calib_blocks
     fprintf('  calibration block %d/%d\n', k, calib_blocks);
 
     % Release the next STM32 buffer and show calibration progress on the TTGO.
-    sendState(ST_CALIB);
+    sendStatus('CALIB', 0, k);
 end
 
 baseline = baseline / calib_blocks;
@@ -166,12 +167,12 @@ while ishandle(fig)
         setBanner('ALARM', COL_ALARM, ...
             sprintf('ALARM    distance %.1f  >  %.0f    |    block %d', d, threshold, block));
         set(hHead, 'MarkerFaceColor', COL_ALARM);
-        sendState(ST_ALARM);
+        sendStatus('ALARM', d, block);
     else
         setBanner('OK', COL_OK, ...
             sprintf('OK    distance %.1f  /  %.0f    |    block %d', d, threshold, block));
         set(hHead, 'MarkerFaceColor', COL_OK);
-        sendState(ST_OK);
+        sendStatus('OK', d, block);
     end
 
     drawnow limitrate;     % faster, smoother updates than plain drawnow
