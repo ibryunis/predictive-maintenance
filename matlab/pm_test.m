@@ -14,26 +14,16 @@ BAUD          = 115200;    % must match STM32 serial_vcp.cpp
 fs            = 1000;      % STM32 uses 1 ms sample period
 N             = 128;       % must match STM32 kSampleCount
 threshold     = 50;        % anomaly threshold
-axis_sel      = 'Z';       % 'X', 'Y', or 'Z'
 calib_blocks  = 5;         % number of healthy blocks for baseline
 serialTimeout = 15;        % seconds
 spec_ymax     = 200;       % FFT spectrum zoom: Y-axis max (lower = more zoomed in)
 
 %% Derived values
+% STM32 sends "x_mg,y_mg,z_mg" per sample. All three axes are combined into one
+% rotation-invariant vibration spectrum (see singleSidedCombined), so the result
+% is orientation-independent and gravity (DC) is removed.
 df   = fs / N;
 f_ax = (0:N/2) * df;
-
-% CSV format from STM32: time_ms,x_mg,y_mg,z_mg
-switch upper(axis_sel)
-    case 'X'
-        col = 2;
-    case 'Y'
-        col = 3;
-    case 'Z'
-        col = 4;
-    otherwise
-        error('axis_sel must be ''X'', ''Y'', or ''Z''.');
-end
 
 %% Connect to STM32
 sStm = serialport(PORT_STM32, BAUD);
@@ -110,8 +100,8 @@ input('Keep the board still, then click the Command Window and press ENTER to ca
 baseline = zeros(1, N/2+1);
 
 for k = 1:calib_blocks
-    x = readStmBuffer(sStm, N, col);
-    P = singleSided(x, N);
+    xyz = readStmBuffer(sStm, N);
+    P = singleSidedCombined(xyz, N);
 
     baseline = baseline + P;
 
@@ -144,8 +134,8 @@ blocks = [];
 block = 0;
 
 while ishandle(fig)
-    x = readStmBuffer(sStm, N, col);
-    P = singleSided(x, N);
+    xyz = readStmBuffer(sStm, N);
+    P = singleSidedCombined(xyz, N);
     d = norm(P - baseline);
 
     block = block + 1;
@@ -180,14 +170,25 @@ while ishandle(fig)
 end
 
 %% Helper functions
-function P = singleSided(x, N)
-    Y = fft(x) / N;
-    P = abs(Y(1:N/2+1));
-    P(2:end-1) = 2 * P(2:end-1);
+function P = singleSidedCombined(xyz, N)
+    % Combine X, Y, Z into one "total vibration" spectrum.
+    % The per-bin magnitude sqrt(X^2+Y^2+Z^2) is rotation-invariant, so the
+    % result does not depend on how the box is oriented. The DC (0 Hz) bin is
+    % then zeroed to remove gravity, leaving only real vibration.
+    P = zeros(1, N/2+1);
+    for a = 1:3
+        Y  = fft(xyz(:, a)) / N;
+        Pa = abs(Y(1:N/2+1)).';
+        Pa(2:end-1) = 2 * Pa(2:end-1);
+        P = P + Pa.^2;
+    end
+    P = sqrt(P);
+    P(1) = 0;   % drop DC / gravity -> orientation-independent
 end
 
-function x = readStmBuffer(s, N, col)
-    x = zeros(1, N);
+function xyz = readStmBuffer(s, N)
+    % Reads N samples of "x,y,z" (one per line) between BEGIN_BUFFER/END_BUFFER.
+    xyz = zeros(N, 3);
     n = 0;
     inBuffer = false;
 
@@ -221,10 +222,9 @@ function x = readStmBuffer(s, N, col)
             error('STM32 buffer ended early: received %d of %d samples.', n, N);
         end
 
-        % Each in-buffer line is a single Z-axis value. Any non-numeric line
-        % (header / status / error text) parses to NaN and is skipped.
-        v = str2double(line);
-        if isnan(v)
+        % Each in-buffer line is "x,y,z". Non-numeric/short lines are skipped.
+        v = str2double(split(line, ","));
+        if numel(v) ~= 3 || any(isnan(v))
             continue;
         end
 
@@ -233,6 +233,6 @@ function x = readStmBuffer(s, N, col)
             error('Received more than %d samples before END_BUFFER. Check N in MATLAB and STM32.', N);
         end
 
-        x(n) = v;
+        xyz(n, :) = v.';
     end
 end
