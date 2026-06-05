@@ -1,6 +1,6 @@
 % Predictive Maintenance - FFT Anomaly Detection
 % Matches current STM32 firmware:
-% - 1024 samples per transmitted buffer
+% - 128 samples per transmitted buffer (N below; must equal STM32 kSampleCount)
 % - 1000 Hz sample rate
 % - serial framing with BEGIN_BUFFER / END_BUFFER
 % - MATLAB sends one line back after every buffer: "STATE,distance,block"
@@ -13,8 +13,11 @@ PORT_STM32    = "COM8";    % <-- check Device Manager for the ST-LINK Virtual CO
 BAUD          = 115200;    % must match STM32 serial_vcp.cpp
 fs            = 1000;      % STM32 uses 1 ms sample period
 N             = 128;       % must match STM32 kSampleCount
-threshold     = 50;        % anomaly threshold
-calib_blocks  = 5;         % number of healthy blocks for baseline
+threshold     = 50;        % anomaly threshold (TUNE at the rig: set it between
+                           %   the healthy d band and the faulty d band)
+calib_blocks  = 15;        % healthy blocks averaged for the baseline (more = steadier)
+smooth_n      = 5;         % blocks of d averaged before the alarm decision
+                           %   (smooths out single-block vibration spikes)
 serialTimeout = 15;        % seconds
 spec_ymax     = 200;       % FFT spectrum zoom: Y-axis max (lower = more zoomed in)
 
@@ -89,6 +92,12 @@ title(axDist, 'Anomaly Detection', 'Color', COL_TXT);
 grid(axDist, 'on');
 
 %% Calibration
+% IMPORTANT: the baseline = whatever the rig is doing RIGHT NOW. Calibrate on the
+% exact state you want to count as "normal" -- for the fan demo that is the
+% HEALTHY fan running steadily (NOT a faulty fan, and NOT with the fan switched
+% off). Anything that later differs from this state -- a real fault, OR simply
+% stopping the fan -- reads as an anomaly, because d is the distance from this
+% baseline.
 setBanner('CALIB', COL_CALIB, 'CLICK COMMAND WINDOW + PRESS ENTER TO CALIBRATE');
 % input() reliably waits for ENTER in the Command Window. (pause is flaky
 % because keypresses go to whichever window has focus, often the figure.)
@@ -132,15 +141,25 @@ WINDOW = 100;          % show only the most recent N blocks (keeps the plot fast
 dist  = [];
 blocks = [];
 block = 0;
+dRecent = [];          % recent raw d values, averaged for the alarm decision
 
 while ishandle(fig)
     xyz = readStmBuffer(sStm, N);
     P = singleSidedCombined(xyz, N);
     d = norm(P - baseline);
 
+    % Smooth d over the last smooth_n blocks before deciding. Strong vibration
+    % jitters from block to block, so one noisy block can briefly spike d;
+    % averaging stops that single block from false-tripping the alarm.
+    dRecent(end+1) = d; %#ok<AGROW>
+    if numel(dRecent) > smooth_n
+        dRecent = dRecent(end-smooth_n+1:end);
+    end
+    dSmooth = mean(dRecent);
+
     block = block + 1;
-    dist(end+1)   = d;     %#ok<AGROW>
-    blocks(end+1) = block; %#ok<AGROW>
+    dist(end+1)   = dSmooth;  %#ok<AGROW>  plot/decide on the smoothed value
+    blocks(end+1) = block;    %#ok<AGROW>
 
     % Keep only the last WINDOW points so rendering stays snappy over time
     if numel(dist) > WINDOW
@@ -150,23 +169,23 @@ while ishandle(fig)
 
     set(hSpec, 'YData', P);
     set(hDist, 'XData', blocks, 'YData', dist);
-    set(hHead, 'XData', block, 'YData', d);   % highlight the current value
+    set(hHead, 'XData', block, 'YData', dSmooth);   % highlight the current value
     xlim(axDist, [blocks(1), max(blocks(end), blocks(1)+1)]);
 
-    if d > threshold
+    if dSmooth > threshold
         setBanner('ALARM', COL_ALARM, ...
-            sprintf('ALARM    distance %.1f  >  %.0f    |    block %d', d, threshold, block));
+            sprintf('ALARM    distance %.1f  >  %.0f    |    block %d', dSmooth, threshold, block));
         set(hHead, 'MarkerFaceColor', COL_ALARM);
-        sendStatus('ALARM', d, block);
+        sendStatus('ALARM', dSmooth, block);
     else
         setBanner('OK', COL_OK, ...
-            sprintf('OK    distance %.1f  /  %.0f    |    block %d', d, threshold, block));
+            sprintf('OK    distance %.1f  /  %.0f    |    block %d', dSmooth, threshold, block));
         set(hHead, 'MarkerFaceColor', COL_OK);
-        sendStatus('OK', d, block);
+        sendStatus('OK', dSmooth, block);
     end
 
     drawnow limitrate;     % faster, smoother updates than plain drawnow
-    fprintf('d = %.2f   (threshold = %.2f)\n', d, threshold);
+    fprintf('d = %.2f   (smoothed %.2f, threshold = %.2f)\n', d, dSmooth, threshold);
 end
 
 %% Helper functions
