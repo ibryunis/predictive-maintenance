@@ -98,10 +98,28 @@ grid(axDist, 'on');
 % off). Anything that later differs from this state -- a real fault, OR simply
 % stopping the fan -- reads as an anomaly, because d is the distance from this
 % baseline.
-setBanner('CALIB', COL_CALIB, 'CLICK COMMAND WINDOW + PRESS ENTER TO CALIBRATE');
-% input() reliably waits for ENTER in the Command Window. (pause is flaky
-% because keypresses go to whichever window has focus, often the figure.)
-input('Keep the board still, then click the Command Window and press ENTER to calibrate...', 's');
+setBanner('CALIB', COL_CALIB, 'PRESS THE  CALIBRATE  BUTTON (HEALTHY FAN, STEADY)');
+
+% A Calibrate button on the dashboard replaces the old "press ENTER in the
+% Command Window" prompt -- that keypress went to whichever window had focus,
+% so it often did nothing. Clicking the button calls uiresume to release the
+% uiwait below and start the calibration loop.
+hCalibBtn = uicontrol(fig, 'Style', 'pushbutton', 'String', 'CALIBRATE', ...
+    'FontSize', 14, 'FontWeight', 'bold', ...
+    'Units', 'normalized', 'Position', [0.42 0.855 0.16 0.035], ...
+    'BackgroundColor', COL_OK, 'ForegroundColor', COL_TXT, ...
+    'Callback', @(src, ~) uiresume(fig));
+
+uiwait(fig);            % blocks here until the Calibrate button is clicked
+
+% If the window was closed instead of clicking the button, stop cleanly.
+if ~ishandle(fig)
+    return;
+end
+
+% Lock the button during calibration + monitoring so it can't re-trigger.
+set(hCalibBtn, 'Enable', 'off', 'String', 'CALIBRATING...');
+drawnow;
 
 % Protocol: the STM32 sends a buffer, then waits for exactly ONE reply line
 % before sending the next. So we read one buffer, then send one status line --
@@ -131,6 +149,7 @@ end
 
 baseline = baseline / calib_blocks;
 set(hBase, 'YData', baseline);
+set(hCalibBtn, 'String', 'CALIBRATED');
 setBanner('OK', COL_OK, 'CALIBRATION DONE  -  monitoring...');
 fprintf('Calibration done.\n');
 
