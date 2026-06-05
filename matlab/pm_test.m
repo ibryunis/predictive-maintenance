@@ -1,276 +1,153 @@
 % Predictive Maintenance - FFT Anomaly Detection
-% Matches current STM32 firmware:
-% - 128 samples per transmitted buffer (N below; must equal STM32 kSampleCount)
-% - 1000 Hz sample rate
-% - serial framing with BEGIN_BUFFER / END_BUFFER
-% - MATLAB sends one line back after every buffer: "STATE,distance,block"
-%   STATE is CALIB / OK / ALARM. The STM32 forwards it to the TTGO over I2C.
-
-clearvars; close all; clc;
+% Group 1 - 2026
+%
+% The STM32 streams accelerometer samples (x,y,z in mg) to the laptop. For each
+% block we run an FFT, combine the three axes into one vibration spectrum, and
+% compare it to a healthy baseline. If the live spectrum drifts too far from the
+% baseline (Euclidean distance over a threshold) we raise an alarm. The state is
+% sent back to the STM32, which forwards it to the TTGO display.
 
 %% Configuration
-PORT_STM32    = "COM8";    % <-- check Device Manager for the ST-LINK Virtual COM Port
-BAUD          = 115200;    % must match STM32 serial_vcp.cpp
-fs            = 1000;      % STM32 uses 1 ms sample period
-N             = 128;       % must match STM32 kSampleCount
-threshold     = 50;        % anomaly threshold (TUNE at the rig: set it between
-                           %   the healthy d band and the faulty d band)
-calib_blocks  = 15;        % healthy blocks averaged for the baseline (more = steadier)
-smooth_n      = 5;         % blocks of d averaged before the alarm decision
-                           %   (smooths out single-block vibration spikes)
-serialTimeout = 15;        % seconds
-spec_ymax     = 200;       % FFT spectrum zoom: Y-axis max (lower = more zoomed in)
+clearvars;  close all;  clc;
 
-%% Derived values
-% STM32 sends "x_mg,y_mg,z_mg" per sample. All three axes are combined into one
-% rotation-invariant vibration spectrum (see singleSidedCombined), so the result
-% is orientation-independent and gravity (DC) is removed.
-df   = fs / N;
-f_ax = (0:N/2) * df;
+PORT      = "COM8";     % ST-LINK virtual COM port (check Device Manager)
+BAUD      = 115200;     % must match the STM32 firmware
+fs        = 1000;       % [Hz] sample rate (STM32 samples every 1 ms)
+N         = 128;        % samples per block (must match STM32 kSampleCount)
+threshold = 50;         % alarm level (tune at the rig)
+nCalib    = 15;         % healthy blocks averaged for the baseline
+nSmooth   = 5;          % blocks of distance averaged before deciding
+specYmax  = 200;        % [-] y-axis zoom for the spectrum plot
+WIN       = 100;        % distance points kept on screen
 
-%% Connect to STM32
-sStm = serialport(PORT_STM32, BAUD);
-sStm.Timeout = serialTimeout;
-configureTerminator(sStm, "LF");
-flush(sStm);
+df   = fs / N;          % [Hz] frequency resolution
+freq = 0 : df : fs/2;   % [Hz] single-sided frequency axis
 
-% Send "STATE,distance,block" to the STM32, which forwards it to the TTGO.
-% STATE is one of: CALIB, OK, ALARM (also IDLE at boot, set by the firmware).
-sendStatus = @(state, dist, block) writeline(sStm, sprintf('%s,%.2f,%d', state, dist, block));
+%% Connect to the STM32
+stm = serialport( PORT, BAUD );
+stm.Timeout = 15;
+configureTerminator( stm, "LF" );
+flush( stm );
 
-%% Figure: status dashboard + live spectrum + distance history
-% Colours (state -> RGB)
-COL_BG    = [0.12 0.12 0.14];   % dark background
-COL_PANEL = [0.18 0.18 0.21];
-COL_CALIB = [0.20 0.55 0.90];   % blue
-COL_OK    = [0.20 0.70 0.35];   % green
-COL_ALARM = [0.90 0.25 0.25];   % red
-COL_TXT   = [0.92 0.92 0.94];
+% Reply sent once per block: "STATE,distance,block"  (STATE = CALIB / OK / ALARM)
+sendStatus = @(state, d, blk) writeline( stm, sprintf('%s,%.2f,%d', state, d, blk) );
 
-fig = figure('Name', 'PSCD Predictive Maintenance', 'NumberTitle', 'off', ...
-             'Color', COL_BG, 'Position', [80 80 1000 720]);
+%% Set up the plots
+fig = figure( 'Name', 'PSCD Predictive Maintenance', 'NumberTitle', 'off' );
 
-% --- Big status banner (top) ---
-hBanner = annotation(fig, 'textbox', [0.04 0.90 0.92 0.075], ...
-    'String', 'CONNECTING...', 'FontSize', 22, 'FontWeight', 'bold', ...
-    'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', ...
-    'Color', COL_TXT, 'BackgroundColor', COL_CALIB, ...
-    'EdgeColor', 'none', 'FaceAlpha', 1);
+% Live spectrum: current block vs healthy baseline
+subplot( 2, 1, 1 );
+hLive = plot( freq, zeros(1, N/2+1), 'b-',  'LineWidth', 1.5 );  hold on;
+hBase = plot( freq, zeros(1, N/2+1), 'r--', 'LineWidth', 1.5 );  hold off;
+xlabel('frequency   [Hz]');  ylabel('amplitude');  grid on;
+xlim([ 0 fs/2 ]);  ylim([ 0 specYmax ]);
+legend('live', 'baseline');  title('FFT spectrum');
 
-% Helper to update the banner in one call
-setBanner = @(state, col, txt) set(hBanner, 'String', txt, 'BackgroundColor', col);
+% Distance history with the alarm threshold
+subplot( 2, 1, 2 );
+hDist = plot( NaN, NaN, 'b-', 'LineWidth', 1.5 );  hold on;
+yline( threshold, 'r-', 'threshold' );  hold off;
+xlabel('block');  ylabel('distance');  grid on;
+title('anomaly distance');
 
-% --- FFT spectrum (middle) ---
-axSpec = axes(fig, 'Position', [0.08 0.50 0.86 0.33], ...
-              'Color', COL_PANEL, 'XColor', COL_TXT, 'YColor', COL_TXT, ...
-              'GridColor', [0.4 0.4 0.45]);
-hold(axSpec, 'on');
-hSpec = area(axSpec, f_ax, zeros(1, N/2+1), 'FaceColor', [0.30 0.65 0.95], ...
-             'FaceAlpha', 0.5, 'EdgeColor', [0.40 0.75 1.0], 'LineWidth', 1.2);
-hBase = plot(axSpec, f_ax, zeros(1, N/2+1), '--', 'Color', [1.0 0.75 0.30], 'LineWidth', 1.5);
-hold(axSpec, 'off');
-xlabel(axSpec, 'Frequency [Hz]'); ylabel(axSpec, 'Amplitude');
-title(axSpec, 'Live FFT Spectrum', 'Color', COL_TXT);
-legend(axSpec, {'Live', 'Healthy baseline'}, 'TextColor', COL_TXT, ...
-       'Color', COL_PANEL, 'EdgeColor', [0.4 0.4 0.45], 'Location', 'northeast');
-grid(axSpec, 'on'); xlim(axSpec, [0, fs/2]); ylim(axSpec, [0, spec_ymax]);
+%% Calibration  (press the button)
+% IMPORTANT: calibrate on the HEALTHY fan running steadily. The baseline becomes
+% "normal", so anything different later (a fault, or the fan stopping) alarms.
+btn = uicontrol( fig, 'Style', 'pushbutton', 'String', 'CALIBRATE', ...
+                 'FontSize', 12, 'FontWeight', 'bold', ...
+                 'Units', 'normalized', 'Position', [0.02 0.945 0.15 0.05], ...
+                 'Callback', @(~,~) uiresume(fig) );
+sgtitle('Press CALIBRATE  (healthy fan, steady)');
+uiwait( fig );                          % wait here until the button is clicked
+if ~ishandle( fig );  return;  end      % window closed -> stop
+set( btn, 'Enable', 'off', 'String', 'CALIBRATING...' );
 
-% --- Distance history (bottom) ---
-axDist = axes(fig, 'Position', [0.08 0.08 0.86 0.33], ...
-              'Color', COL_PANEL, 'XColor', COL_TXT, 'YColor', COL_TXT, ...
-              'GridColor', [0.4 0.4 0.45]);
-hold(axDist, 'on');
-hThreshLine = yline(axDist, threshold, '-', sprintf('threshold = %.0f', threshold), ...
-                    'Color', COL_ALARM, 'LineWidth', 1.5, ...
-                    'LabelHorizontalAlignment', 'left');
-hDist = plot(axDist, NaN, NaN, '-', 'Color', [0.6 0.8 1.0], 'LineWidth', 1.5);
-hHead = plot(axDist, NaN, NaN, 'o', 'MarkerSize', 9, 'MarkerFaceColor', COL_OK, ...
-             'MarkerEdgeColor', 'w', 'LineWidth', 1.2);   % current value marker
-hold(axDist, 'off');
-xlabel(axDist, 'Block'); ylabel(axDist, 'Euclidean distance');
-title(axDist, 'Anomaly Detection', 'Color', COL_TXT);
-grid(axDist, 'on');
-
-%% Calibration
-% IMPORTANT: the baseline = whatever the rig is doing RIGHT NOW. Calibrate on the
-% exact state you want to count as "normal" -- for the fan demo that is the
-% HEALTHY fan running steadily (NOT a faulty fan, and NOT with the fan switched
-% off). Anything that later differs from this state -- a real fault, OR simply
-% stopping the fan -- reads as an anomaly, because d is the distance from this
-% baseline.
-setBanner('CALIB', COL_CALIB, 'PRESS THE  CALIBRATE  BUTTON (HEALTHY FAN, STEADY)');
-
-% A Calibrate button on the dashboard replaces the old "press ENTER in the
-% Command Window" prompt -- that keypress went to whichever window had focus,
-% so it often did nothing. Clicking the button calls uiresume to release the
-% uiwait below and start the calibration loop.
-hCalibBtn = uicontrol(fig, 'Style', 'pushbutton', 'String', 'CALIBRATE', ...
-    'FontSize', 14, 'FontWeight', 'bold', ...
-    'Units', 'normalized', 'Position', [0.42 0.855 0.16 0.035], ...
-    'BackgroundColor', COL_OK, 'ForegroundColor', COL_TXT, ...
-    'Callback', @(src, ~) uiresume(fig));
-
-uiwait(fig);            % blocks here until the Calibrate button is clicked
-
-% If the window was closed instead of clicking the button, stop cleanly.
-if ~ishandle(fig)
-    return;
-end
-
-% Lock the button during calibration + monitoring so it can't re-trigger.
-set(hCalibBtn, 'Enable', 'off', 'String', 'CALIBRATING...');
-drawnow;
-
-% Protocol: the STM32 sends a buffer, then waits for exactly ONE reply line
-% before sending the next. So we read one buffer, then send one status line --
-% strictly one-to-one, no priming line (that would desync the handshake).
-baseline = zeros(1, N/2+1);
-
-for k = 1:calib_blocks
-    xyz = readStmBuffer(sStm, N);
-    P = singleSidedCombined(xyz, N);
-
+baseline = zeros( 1, N/2+1 );
+for k = 1 : nCalib
+    P = singleSided( readBlock(stm, N), N );
     baseline = baseline + P;
-
-    % Build a little ASCII progress bar for the banner
-    nfill = round(20 * k / calib_blocks);
-    bar   = [repmat('#', 1, nfill), repmat('-', 1, 20 - nfill)];
-    setBanner('CALIB', COL_CALIB, ...
-        sprintf('CALIBRATING   [%s]   block %d / %d', bar, k, calib_blocks));
-
-    set(hSpec, 'YData', P);
-    drawnow;
-
-    fprintf('  calibration block %d/%d\n', k, calib_blocks);
-
-    % Release the next STM32 buffer and show calibration progress on the TTGO.
-    sendStatus('CALIB', 0, k);
+    set( hLive, 'YData', P );  drawnow;
+    sendStatus( 'CALIB', 0, k );        % release the next STM32 block
 end
+baseline = baseline / nCalib;
+set( hBase, 'YData', baseline );
+set( btn, 'String', 'CALIBRATED' );
 
-baseline = baseline / calib_blocks;
-set(hBase, 'YData', baseline);
-set(hCalibBtn, 'String', 'CALIBRATED');
-setBanner('OK', COL_OK, 'CALIBRATION DONE  -  monitoring...');
-fprintf('Calibration done.\n');
+%% Monitoring loop
+recent = [];        % last nSmooth distances (for smoothing)
+dist   = [];        % distance history (for the plot)
+block  = 0;
+while ishandle( fig )
+    P = singleSided( readBlock(stm, N), N );
+    d = norm( P - baseline );
 
-%% Monitoring
-fprintf('Monitoring... shake the board to trigger the alarm.\n');
-
-WINDOW = 100;          % show only the most recent N blocks (keeps the plot fast)
-dist  = [];
-blocks = [];
-block = 0;
-dRecent = [];          % recent raw d values, averaged for the alarm decision
-
-while ishandle(fig)
-    xyz = readStmBuffer(sStm, N);
-    P = singleSidedCombined(xyz, N);
-    d = norm(P - baseline);
-
-    % Smooth d over the last smooth_n blocks before deciding. Strong vibration
-    % jitters from block to block, so one noisy block can briefly spike d;
-    % averaging stops that single block from false-tripping the alarm.
-    dRecent(end+1) = d; %#ok<AGROW>
-    if numel(dRecent) > smooth_n
-        dRecent = dRecent(end-smooth_n+1:end);
-    end
-    dSmooth = mean(dRecent);
+    % Average the last nSmooth distances so one noisy block cannot false-alarm
+    recent = [recent d];                          % add this block's distance
+    recent = recent( max(1, end-nSmooth+1) : end );   % keep only the last nSmooth
+    dSmooth = mean( recent );
 
     block = block + 1;
-    dist(end+1)   = dSmooth;  %#ok<AGROW>  plot/decide on the smoothed value
-    blocks(end+1) = block;    %#ok<AGROW>
+    dist(end+1) = dSmooth;                        %#ok<AGROW>
 
-    % Keep only the last WINDOW points so rendering stays snappy over time
-    if numel(dist) > WINDOW
-        dist   = dist(end-WINDOW+1:end);
-        blocks = blocks(end-WINDOW+1:end);
-    end
-
-    set(hSpec, 'YData', P);
-    set(hDist, 'XData', blocks, 'YData', dist);
-    set(hHead, 'XData', block, 'YData', dSmooth);   % highlight the current value
-    xlim(axDist, [blocks(1), max(blocks(end), blocks(1)+1)]);
-
+    % Decide the state and report it
     if dSmooth > threshold
-        setBanner('ALARM', COL_ALARM, ...
-            sprintf('ALARM    distance %.1f  >  %.0f    |    block %d', dSmooth, threshold, block));
-        set(hHead, 'MarkerFaceColor', COL_ALARM);
-        sendStatus('ALARM', dSmooth, block);
+        state = 'ALARM';  col = 'r';
     else
-        setBanner('OK', COL_OK, ...
-            sprintf('OK    distance %.1f  /  %.0f    |    block %d', dSmooth, threshold, block));
-        set(hHead, 'MarkerFaceColor', COL_OK);
-        sendStatus('OK', dSmooth, block);
+        state = 'OK';     col = [0 0.6 0];
     end
+    sendStatus( state, dSmooth, block );
 
-    drawnow limitrate;     % faster, smoother updates than plain drawnow
-    fprintf('d = %.2f   (smoothed %.2f, threshold = %.2f)\n', d, dSmooth, threshold);
+    % Update the plots (show only the most recent WIN points)
+    lo = max( 1, block - WIN + 1 );
+    set( hLive, 'YData', P );
+    set( hDist, 'XData', lo:block, 'YData', dist(lo:end) );
+    sgtitle( sprintf('%s    distance %.1f / %.0f    block %d', ...
+             state, dSmooth, threshold, block), 'Color', col );
+    drawnow limitrate;
+
+    fprintf('d = %.2f   smoothed = %.2f   threshold = %g\n', d, dSmooth, threshold);
 end
 
 %% Helper functions
-function P = singleSidedCombined(xyz, N)
-    % Combine X, Y, Z into one "total vibration" spectrum.
-    % The per-bin magnitude sqrt(X^2+Y^2+Z^2) is rotation-invariant, so the
-    % result does not depend on how the box is oriented. The DC (0 Hz) bin is
-    % then zeroed to remove gravity, leaving only real vibration.
-    P = zeros(1, N/2+1);
-    for a = 1:3
-        Y  = fft(xyz(:, a)) / N;
-        Pa = abs(Y(1:N/2+1)).';
-        Pa(2:end-1) = 2 * Pa(2:end-1);
-        P = P + Pa.^2;
+function P = singleSided( xyz, N )
+    % Combine X, Y, Z into one vibration spectrum. The per-bin magnitude
+    % sqrt(X^2+Y^2+Z^2) does not depend on orientation; the DC (0 Hz) bin is
+    % zeroed afterwards to remove gravity.
+    P = zeros( 1, N/2+1 );
+    for a = 1 : 3
+        X  = fft( xyz(:, a) ) / N;          % normalized FFT of one axis
+        Xa = abs( X(1:N/2+1) ).';           % keep 0..fs/2 as a row
+        Xa(2:end-1) = 2 * Xa(2:end-1);      % single-sided: double inner bins
+        P = P + Xa.^2;
     end
-    P = sqrt(P);
-    P(1) = 0;   % drop DC / gravity -> orientation-independent
+    P = sqrt( P );
+    P(1) = 0;                               % remove gravity
 end
 
-function xyz = readStmBuffer(s, N)
-    % Reads N samples of "x,y,z" (one per line) between BEGIN_BUFFER/END_BUFFER.
-    xyz = zeros(N, 3);
-    n = 0;
-    inBuffer = false;
-
+function xyz = readBlock( s, N )
+    % Read N "x,y,z" lines between BEGIN_BUFFER and END_BUFFER.
+    xyz = zeros( N, 3 );
+    n = 0;  inBlock = false;
     while true
         try
-            raw = readline(s);
+            line = strtrim( string( readline(s) ) );
         catch
-            error(['Serial timeout while waiting for STM32 data. ' ...
-                   'Check the COM port, baud rate, cable, and that the board is running.']);
+            error('Serial timeout. Check the COM port, baud, cable, and board.');
         end
 
-        line = strtrim(string(raw));
         if strlength(line) == 0
-            continue;
-        end
-
-        if line == "BEGIN_BUFFER"
-            inBuffer = true;
-            n = 0;
-            continue;
-        end
-
-        if ~inBuffer
-            continue;
-        end
-
-        if line == "END_BUFFER"
-            if n == N
-                return;
+            continue;                       % blank / timeout line
+        elseif line == "BEGIN_BUFFER"
+            inBlock = true;  n = 0;
+        elseif line == "END_BUFFER"
+            if n == N;  return;  end
+            error('Block ended early: %d of %d samples.', n, N);
+        elseif inBlock
+            v = str2double( split(line, ",") );
+            if numel(v) == 3 && ~any(isnan(v))
+                n = n + 1;
+                xyz(n, :) = v.';
             end
-            error('STM32 buffer ended early: received %d of %d samples.', n, N);
         end
-
-        % Each in-buffer line is "x,y,z". Non-numeric/short lines are skipped.
-        v = str2double(split(line, ","));
-        if numel(v) ~= 3 || any(isnan(v))
-            continue;
-        end
-
-        n = n + 1;
-        if n > N
-            error('Received more than %d samples before END_BUFFER. Check N in MATLAB and STM32.', N);
-        end
-
-        xyz(n, :) = v.';
     end
 end
