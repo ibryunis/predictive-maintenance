@@ -17,7 +17,7 @@ fr        = (0:N/2)*fs/N;         % single-sided frequency vector [Hz]
 
 % --- connect to the STM32 ---
 stm = serialport(port, baud);     % open the port
-configureTerminator(stm, "LF");   % lines end in newline
+configureTerminator(stm, "CR/LF"); % STM32 ends lines with \r\n
 stm.Timeout = 15;                 % serial timeout [s]
 flush(stm);                       % drop old data
 

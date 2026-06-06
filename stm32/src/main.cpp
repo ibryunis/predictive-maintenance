@@ -130,7 +130,11 @@ static void serialReadLine(char* buf, uint16_t maxLen)
     while (1)
     {
         uint8_t c = 0;
-        if (HAL_UART_Receive(&uart, &c, 1, 100) != HAL_OK) continue;
+        if (HAL_UART_Receive(&uart, &c, 1, 100) != HAL_OK)
+        {
+            __HAL_UART_CLEAR_OREFLAG(&uart);   // clear overrun so RX can't wedge
+            continue;
+        }
         if (c == '\n') { buf[n] = '\0'; return; }
         if (c == '\r') continue;
         if (n < maxLen - 1) buf[n++] = (char)c;
