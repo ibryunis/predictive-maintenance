@@ -1,153 +1,101 @@
-% Predictive Maintenance - FFT Anomaly Detection
-% Group 1 - 2026
-%
-% The STM32 streams accelerometer samples (x,y,z in mg) to the laptop. For each
-% block we run an FFT, combine the three axes into one vibration spectrum, and
-% compare it to a healthy baseline. If the live spectrum drifts too far from the
-% baseline (Euclidean distance over a threshold) we raise an alarm. The state is
-% sent back to the STM32, which forwards it to the TTGO display.
+%% Predictive Maintenance - FFT anomaly detection
+% Yunis Ibrahimov - Group 1
+% Streams x,y,z from the STM32, runs an FFT, and compares each block to a
+% healthy baseline. Too far from the baseline (Euclidean distance) = alarm.
 
-%% Configuration
-clearvars;  close all;  clc;
+clearvars; close all; clc;        % clear workspace
 
-PORT      = "COM8";     % ST-LINK virtual COM port (check Device Manager)
-BAUD      = 115200;     % must match the STM32 firmware
-fs        = 1000;       % [Hz] sample rate (STM32 samples every 1 ms)
-N         = 128;        % samples per block (must match STM32 kSampleCount)
-threshold = 50;         % alarm level (tune at the rig)
-nCalib    = 15;         % healthy blocks averaged for the baseline
-nSmooth   = 5;          % blocks of distance averaged before deciding
-specYmax  = 200;        % [-] y-axis zoom for the spectrum plot
-WIN       = 100;        % distance points kept on screen
+% --- settings ---
+port      = "COM8";               % ST-LINK serial port
+baud      = 115200;               % must match the STM32
+fs        = 1000;                 % sampling frequency [Hz]
+N         = 128;                  % samples per block
+threshold = 50;                   % alarm level (tune at the rig)
+nCalib    = 15;                   % blocks averaged for the baseline
+nSmooth   = 5;                    % blocks averaged before deciding
+fr        = (0:N/2)*fs/N;         % single-sided frequency vector [Hz]
 
-df   = fs / N;          % [Hz] frequency resolution
-freq = 0 : df : fs/2;   % [Hz] single-sided frequency axis
+% --- connect to the STM32 ---
+stm = serialport(port, baud);     % open the port
+configureTerminator(stm, "LF");   % lines end in newline
+stm.Timeout = 15;                 % serial timeout [s]
+flush(stm);                       % drop old data
 
-%% Connect to the STM32
-stm = serialport( PORT, BAUD );
-stm.Timeout = 15;
-configureTerminator( stm, "LF" );
-flush( stm );
+% --- plots ---
+fig = figure('Name', 'Predictive Maintenance');     % new figure
+subplot(211);                                        % spectrum plot
+hLive = plot(fr, zeros(1,N/2+1), 'b');  hold on;     % live spectrum
+hBase = plot(fr, zeros(1,N/2+1), 'r--'); hold off;   % baseline
+xlim([0 fs/2]); ylim([0 200]); grid on;              % axes
+xlabel('frequency [Hz]'); ylabel('amplitude'); legend('live','baseline');
 
-% Reply sent once per block: "STATE,distance,block"  (STATE = CALIB / OK / ALARM)
-sendStatus = @(state, d, blk) writeline( stm, sprintf('%s,%.2f,%d', state, d, blk) );
+subplot(212);                                        % distance plot
+hDist = plot(NaN, NaN, 'b'); hold on;                % distance history
+yline(threshold, 'r', 'threshold'); hold off;        % alarm line
+xlabel('block'); ylabel('distance'); grid on;
 
-%% Set up the plots
-fig = figure( 'Name', 'PSCD Predictive Maintenance', 'NumberTitle', 'off' );
+% --- calibrate on the healthy fan (press the button) ---
+btn = uicontrol('Style','pushbutton','String','CALIBRATE', ...   % button
+    'Units','normalized', 'Position',[0.02 0.95 0.15 0.05], ...
+    'Callback', @(~,~) uiresume(fig));
+sgtitle('Press CALIBRATE (healthy fan, steady)');    % prompt
+uiwait(fig);                                         % wait for the click
+if ~ishandle(fig); return; end                       % window closed -> stop
 
-% Live spectrum: current block vs healthy baseline
-subplot( 2, 1, 1 );
-hLive = plot( freq, zeros(1, N/2+1), 'b-',  'LineWidth', 1.5 );  hold on;
-hBase = plot( freq, zeros(1, N/2+1), 'r--', 'LineWidth', 1.5 );  hold off;
-xlabel('frequency   [Hz]');  ylabel('amplitude');  grid on;
-xlim([ 0 fs/2 ]);  ylim([ 0 specYmax ]);
-legend('live', 'baseline');  title('FFT spectrum');
-
-% Distance history with the alarm threshold
-subplot( 2, 1, 2 );
-hDist = plot( NaN, NaN, 'b-', 'LineWidth', 1.5 );  hold on;
-yline( threshold, 'r-', 'threshold' );  hold off;
-xlabel('block');  ylabel('distance');  grid on;
-title('anomaly distance');
-
-%% Calibration  (press the button)
-% IMPORTANT: calibrate on the HEALTHY fan running steadily. The baseline becomes
-% "normal", so anything different later (a fault, or the fan stopping) alarms.
-btn = uicontrol( fig, 'Style', 'pushbutton', 'String', 'CALIBRATE', ...
-                 'FontSize', 12, 'FontWeight', 'bold', ...
-                 'Units', 'normalized', 'Position', [0.02 0.945 0.15 0.05], ...
-                 'Callback', @(~,~) uiresume(fig) );
-sgtitle('Press CALIBRATE  (healthy fan, steady)');
-uiwait( fig );                          % wait here until the button is clicked
-if ~ishandle( fig );  return;  end      % window closed -> stop
-set( btn, 'Enable', 'off', 'String', 'CALIBRATING...' );
-
-baseline = zeros( 1, N/2+1 );
-for k = 1 : nCalib
-    P = singleSided( readBlock(stm, N), N );
-    baseline = baseline + P;
-    set( hLive, 'YData', P );  drawnow;
-    sendStatus( 'CALIB', 0, k );        % release the next STM32 block
+baseline = zeros(1, N/2+1);                          % baseline spectrum
+for k = 1:nCalib                                     % average healthy blocks
+    P = ampSpectrum(readBlock(stm, N), N);           % one block spectrum
+    baseline = baseline + P;                         % accumulate
+    writeline(stm, sprintf('CALIB,0,%d', k));        % release the next block
 end
-baseline = baseline / nCalib;
-set( hBase, 'YData', baseline );
-set( btn, 'String', 'CALIBRATED' );
+baseline = baseline / nCalib;                        % mean = the baseline
+set(hBase, 'YData', baseline);                       % show it
+set(btn, 'String', 'CALIBRATED');                    % update the button
 
-%% Monitoring loop
-recent = [];        % last nSmooth distances (for smoothing)
-dist   = [];        % distance history (for the plot)
-block  = 0;
-while ishandle( fig )
-    P = singleSided( readBlock(stm, N), N );
-    d = norm( P - baseline );
+% --- monitoring loop ---
+dist = [];                                           % distance history
+blk  = 0;                                            % block counter
+while ishandle(fig)                                  % until the window closes
+    P  = ampSpectrum(readBlock(stm, N), N);          % live spectrum
+    d  = norm(P - baseline);                         % distance from baseline
+    dist(end+1) = d;                                 %#ok<SAGROW>
+    ds = mean(dist(max(1,end-nSmooth+1):end));       % smooth the last few
+    blk = blk + 1;                                   % next block
 
-    % Average the last nSmooth distances so one noisy block cannot false-alarm
-    recent = [recent d];                          % add this block's distance
-    recent = recent( max(1, end-nSmooth+1) : end );   % keep only the last nSmooth
-    dSmooth = mean( recent );
-
-    block = block + 1;
-    dist(end+1) = dSmooth;                        %#ok<AGROW>
-
-    % Decide the state and report it
-    if dSmooth > threshold
-        state = 'ALARM';  col = 'r';
+    if ds > threshold                                % decide the state
+        state = 'ALARM'; col = 'r';                  % fault
     else
-        state = 'OK';     col = [0 0.6 0];
+        state = 'OK';    col = [0 0.6 0];            % healthy
     end
-    sendStatus( state, dSmooth, block );
+    writeline(stm, sprintf('%s,%.2f,%d', state, ds, blk));   % reply to the STM32
 
-    % Update the plots (show only the most recent WIN points)
-    lo = max( 1, block - WIN + 1 );
-    set( hLive, 'YData', P );
-    set( hDist, 'XData', lo:block, 'YData', dist(lo:end) );
-    sgtitle( sprintf('%s    distance %.1f / %.0f    block %d', ...
-             state, dSmooth, threshold, block), 'Color', col );
-    drawnow limitrate;
-
-    fprintf('d = %.2f   smoothed = %.2f   threshold = %g\n', d, dSmooth, threshold);
+    lo = max(1, blk-99);                             % last 100 points
+    set(hLive, 'YData', P);                          % update spectrum
+    set(hDist, 'XData', lo:blk, 'YData', dist(lo:end));      % update distance
+    sgtitle(sprintf('%s   d=%.1f / %d   block %d', state, ds, threshold, blk), 'Color', col);
+    drawnow limitrate;                               % refresh
+    fprintf('d = %.2f   smoothed = %.2f\n', d, ds);  % print for tuning
 end
 
-%% Helper functions
-function P = singleSided( xyz, N )
-    % Combine X, Y, Z into one vibration spectrum. The per-bin magnitude
-    % sqrt(X^2+Y^2+Z^2) does not depend on orientation; the DC (0 Hz) bin is
-    % zeroed afterwards to remove gravity.
-    P = zeros( 1, N/2+1 );
-    for a = 1 : 3
-        X  = fft( xyz(:, a) ) / N;          % normalized FFT of one axis
-        Xa = abs( X(1:N/2+1) ).';           % keep 0..fs/2 as a row
-        Xa(2:end-1) = 2 * Xa(2:end-1);      % single-sided: double inner bins
-        P = P + Xa.^2;
+% --- single-sided amplitude spectrum of x,y,z combined ---
+function P = ampSpectrum(xyz, N)
+    P = zeros(1, N/2+1);              % output spectrum
+    for a = 1:3                       % each axis
+        X = abs(fft(xyz(:,a))/N).';   % normalized magnitude
+        X = X(1:N/2+1);               % keep 0..fs/2
+        X(2:end-1) = 2*X(2:end-1);    % single-sided
+        P = P + X.^2;                 % sum the axes (power)
     end
-    P = sqrt( P );
-    P(1) = 0;                               % remove gravity
+    P = sqrt(P);                      % combined magnitude
+    P(1) = 0;                         % drop gravity (0 Hz)
 end
 
-function xyz = readBlock( s, N )
-    % Read N "x,y,z" lines between BEGIN_BUFFER and END_BUFFER.
-    xyz = zeros( N, 3 );
-    n = 0;  inBlock = false;
-    while true
-        try
-            line = strtrim( string( readline(s) ) );
-        catch
-            error('Serial timeout. Check the COM port, baud, cable, and board.');
-        end
-
-        if strlength(line) == 0
-            continue;                       % blank / timeout line
-        elseif line == "BEGIN_BUFFER"
-            inBlock = true;  n = 0;
-        elseif line == "END_BUFFER"
-            if n == N;  return;  end
-            error('Block ended early: %d of %d samples.', n, N);
-        elseif inBlock
-            v = str2double( split(line, ",") );
-            if numel(v) == 3 && ~any(isnan(v))
-                n = n + 1;
-                xyz(n, :) = v.';
-            end
-        end
+% --- read one block of N "x,y,z" lines from the STM32 ---
+function xyz = readBlock(s, N)
+    while readline(s) ~= "BEGIN_BUFFER"; end          % wait for the start marker
+    xyz = zeros(N, 3);                                % block buffer
+    for i = 1:N                                       % read N samples
+        xyz(i,:) = str2double(split(readline(s), ","))';   % parse "x,y,z"
     end
+    readline(s);                                      % discard END_BUFFER
 end
